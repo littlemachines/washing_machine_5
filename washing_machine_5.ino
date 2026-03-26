@@ -164,6 +164,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Soak");
+        lcd.setCursor(0, 1);
+        lcd.print("Time: 2:29");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -181,6 +183,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Pre-wash");
+        lcd.setCursor(0, 1);
+        lcd.print("Time: 2:15");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -198,6 +202,8 @@ void loop() {
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Phase: Main wash");
+      lcd.setCursor(0, 1);
+      lcd.print("Time: 1:55");
 
       analogWrite(pump, 127);
       delay(20000);
@@ -522,6 +528,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Soak");
+        lcd.setCursor(0, 1);
+        lcd.print("Time: 2:28");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -539,6 +547,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Pre-wash");
+        lcd.setCursor(0, 1);
+        lcd.print("Time: 2:14");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -556,6 +566,8 @@ void loop() {
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Phase: Main wash");
+      lcd.setCursor(0, 1);
+      lcd.print("Time: 1:55");
 
       analogWrite(pump, 127);
       delay(20000);
@@ -897,6 +909,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Soak");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 1:49");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -914,6 +928,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Pre-wash");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 1:23");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -931,6 +947,8 @@ void loop() {
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Phase: Main wash");
+       lcd.setCursor(0, 1);
+        lcd.print("Time: 1:15");
 
       analogWrite(pump, 127);
       delay(20000);
@@ -1181,24 +1199,26 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Drain");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:01");
         digitalWrite(pump, HIGH);
         analogWrite(motor, 70);
         delay(30000);
-         for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+        for (int i = 0; i < 6; i++) {
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          delay(30000);
+        }
       }
 
       // --- FINAL SPIN IF ENABLED ---
@@ -1207,12 +1227,16 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Drain");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:08");
         digitalWrite(pump, HIGH);
         analogWrite(motor, 70);
         delay(30000);
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Final spin");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:07");
         analogWrite(motor, 110);
         delay(35000);
         analogWrite(motor, 150);
@@ -1303,6 +1327,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Pre-wash");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:25");
 
         analogWrite(pump, 127);
         delay(20000);
@@ -1320,6 +1346,8 @@ void loop() {
       lcd.clear();
       lcd.setCursor(0, 0);
       lcd.print("Phase: Main wash");
+       lcd.setCursor(0, 1);
+        lcd.print("Time: 0:14");
 
       analogWrite(pump, 127);
       analogWrite(motor, 255);
@@ -1373,20 +1401,20 @@ void loop() {
         lcd.print("Phase: End");
         digitalWrite(pump, LOW);
         for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          delay(30000);
+        }
         running = false;
         return;
       } else {
@@ -1415,7 +1443,7 @@ void loop() {
       lcd.print("Phase: End");
       lcd.setCursor(0, 1);
       lcd.print("Time: 0:00    ");
-       for (int i = 0; i < 6; i++) {
+      for (int i = 0; i < 6; i++) {
         tone(buzzer, 3729);
         delay(1000);
         noTone(buzzer);
@@ -1495,6 +1523,8 @@ void loop() {
         lcd.clear();
         lcd.setCursor(0, 0);
         lcd.print("Phase: Soak");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:18");
         analogWrite(pump, 127);
         analogWrite(motor, 255);
         delay(100);
@@ -1527,21 +1557,21 @@ void loop() {
           lcd.clear();
           lcd.print("Phase: End");
           digitalWrite(pump, LOW);
-           for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+          for (int i = 0; i < 6; i++) {
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            delay(30000);
+          }
           running = false;
           return;
         } else {
@@ -1586,21 +1616,21 @@ void loop() {
         lcd.print("Phase: End");
         lcd.setCursor(0, 1);
         lcd.print("Time: 0:00    ");
-         for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+        for (int i = 0; i < 6; i++) {
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          tone(buzzer, 3729);
+          delay(1000);
+          noTone(buzzer);
+          delay(1000);
+          delay(30000);
+        }
         running = false;
       }
     } else if (potValue < 717) {
@@ -1911,20 +1941,20 @@ void loop() {
               digitalWrite(pump, LOW);
 
               for (int i = 0; i < 6; i++) {
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          delay(30000);
-        }
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                delay(30000);
+              }
 
               running = false;
               return;
@@ -2199,20 +2229,20 @@ void loop() {
           digitalWrite(pump, LOW);
 
           for (int i = 0; i < 6; i++) {
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          tone(buzzer, 3729);
-          delay(1000);
-          noTone(buzzer);
-          delay(1000);
-          delay(30000);
-        }
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            delay(30000);
+          }
 
           running = false;
           return;
@@ -2533,21 +2563,21 @@ void loop() {
 
                   digitalWrite(pump, LOW);
 
-                   for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+                  for (int i = 0; i < 6; i++) {
+                    tone(buzzer, 3729);
+                    delay(1000);
+                    noTone(buzzer);
+                    delay(1000);
+                    tone(buzzer, 3729);
+                    delay(1000);
+                    noTone(buzzer);
+                    delay(1000);
+                    tone(buzzer, 3729);
+                    delay(1000);
+                    noTone(buzzer);
+                    delay(1000);
+                    delay(30000);
+                  }
 
                   running = false;
                   return;
@@ -2763,21 +2793,21 @@ void loop() {
 
               digitalWrite(pump, LOW);
 
-               for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+              for (int i = 0; i < 6; i++) {
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                tone(buzzer, 3729);
+                delay(1000);
+                noTone(buzzer);
+                delay(1000);
+                delay(30000);
+              }
 
               running = false;
               return;
@@ -3176,21 +3206,21 @@ void loop() {
 
           digitalWrite(pump, LOW);
 
-           for (int i = 0; i < 6; i++) {
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        tone(buzzer, 3729);
-        delay(1000);
-        noTone(buzzer);
-        delay(1000);
-        delay(30000);
-      }
+          for (int i = 0; i < 6; i++) {
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            tone(buzzer, 3729);
+            delay(1000);
+            noTone(buzzer);
+            delay(1000);
+            delay(30000);
+          }
 
           running = false;
           return;
