@@ -1204,6 +1204,12 @@ void loop() {
         digitalWrite(pump, HIGH);
         analogWrite(motor, 70);
         delay(30000);
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 0);
+        lcd.setCursor(0, 0);
+        lcd.print("Phase: End");
+         lcd.setCursor(0, 1);
+        lcd.print("Time: 0:00");
         for (int i = 0; i < 6; i++) {
           tone(buzzer, 3729);
           delay(1000);
