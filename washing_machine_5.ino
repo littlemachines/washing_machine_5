@@ -1133,10 +1133,7 @@ void loop() {
 
             // Пуск на помпа за 3 сек
             primePump3s();
-
-            // Симулиране на мотор
-            runStartupMotorPattern3x();
-
+            
             if (soak) {
               lcdShowLine0Cleared(F("Phase: Soak"));
 
