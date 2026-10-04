@@ -21,6 +21,13 @@ int screen = 0;
 int tempCase = 0;
 bool running = false;
 
+// Оставащото време в минути.
+int timeminutes = 0;
+bool automaticCountdown = false;
+bool automaticCountdownSessionStarted = false;
+unsigned long lastMinuteUpdate = 0;
+const unsigned long minuteDurationMs = 60000UL;
+
 void lcdPrintAt(uint8_t col, uint8_t row, const __FlashStringHelper* text);
 void lcdShowLine0Cleared(const __FlashStringHelper* line0);
 void lcdShowLinesCleared(const __FlashStringHelper* line0, const __FlashStringHelper* line1);
@@ -38,6 +45,10 @@ void lcdShowPhaseDrainWithRow1(const __FlashStringHelper* line1);
 void lcdShowPhaseFinalSpinWithRow1(const __FlashStringHelper* line1);
 void showPreviewInvalidError();
 int maxTempCaseForPotValue(int dialValue);
+void updateAutomaticCountdown();
+void delayWithTimeUpdate(unsigned long durationMs);
+int minutesFromTimeText(const __FlashStringHelper* text);
+void setTimeMinutesAndPrint(int minutes);
 
 bool isInvalidCombo(bool soak, bool pre, bool rinseHold, bool noSpin) {
   return (soak && pre) || (rinseHold && noSpin);
@@ -58,17 +69,117 @@ __attribute__((noinline)) void showInvalidComboError() {
   running = false;
 }
 
-__attribute__((noinline)) void printTotalTimeAtRow1(int totalMinutes) {
+__attribute__((noinline)) void printTotalTimeAtRow1(int minutes) {
+  // Всички програми без Cotton White започват автоматично обратно броене
+  // при първото показване на timeminutes след натискане на Start.
+  if (running && potValue >= 102 && !automaticCountdownSessionStarted) {
+    automaticCountdown = true;
+    automaticCountdownSessionStarted = true;
+    lastMinuteUpdate = millis();
+  }
+
   lcd.setCursor(0, 1);
   lcd.print(F("Time: "));
-  lcd.print(totalMinutes / 60);
+  lcd.print(minutes / 60);
   lcd.print(F(":"));
-  if (totalMinutes % 60 < 10) lcd.print(F("0"));
-  lcd.print(totalMinutes % 60);
+  if (minutes % 60 < 10) lcd.print(F("0"));
+  lcd.print(minutes % 60);
   lcd.print(F("   "));
 }
 
+void setTimeMinutesAndPrint(int minutes) {
+  timeminutes = minutes;
+  if (running && potValue >= 102) {
+    automaticCountdown = true;
+    automaticCountdownSessionStarted = true;
+    lastMinuteUpdate = millis();
+  }
+  printTotalTimeAtRow1(timeminutes);
+}
+
+bool automaticCountdownIsActive() {
+  return automaticCountdown && running && potValue >= 102 && timeminutes > 0;
+}
+
+void updateAutomaticCountdown() {
+  if (!automaticCountdownIsActive()) return;
+
+  unsigned long now = millis();
+  while (timeminutes > 0 && now - lastMinuteUpdate >= minuteDurationMs) {
+    lastMinuteUpdate += minuteDurationMs;
+    timeminutes--;
+    printTotalTimeAtRow1(timeminutes);
+  }
+}
+
+// Разделя дългите delay() на части до следващата минута, така че LCD
+// се обновява точно на всяка изминала минута и при блокиращите фази.
+void delayWithTimeUpdate(unsigned long durationMs) {
+  while (durationMs > 0) {
+    updateAutomaticCountdown();
+
+    unsigned long pauseMs = durationMs;
+    if (automaticCountdownIsActive()) {
+      unsigned long elapsed = millis() - lastMinuteUpdate;
+      unsigned long untilNextMinute = minuteDurationMs - elapsed;
+      if (pauseMs > untilNextMinute) pauseMs = untilNextMinute;
+    }
+
+    delay(pauseMs);
+    durationMs -= pauseMs;
+    updateAutomaticCountdown();
+  }
+}
+
+// Времето в F("Time: x:xx") е във flash паметта. Прочитаме го, за да
+// синхронизираме timeminutes с всяка стойност, която се показва на LCD.
+int minutesFromTimeText(const __FlashStringHelper* text) {
+  const char* position = reinterpret_cast<const char*>(text);
+  const char prefix[] = "Time: ";
+
+  for (uint8_t i = 0; prefix[i] != '\0'; i++) {
+    if ((char)pgm_read_byte(position++) != prefix[i]) return -1;
+  }
+
+  int hours = 0;
+  char character = (char)pgm_read_byte(position++);
+  if (character < '0' || character > '9') return -1;
+  while (character >= '0' && character <= '9') {
+    hours = hours * 10 + (character - '0');
+    character = (char)pgm_read_byte(position++);
+  }
+  if (character != ':') return -1;
+
+  int minutes = 0;
+  character = (char)pgm_read_byte(position++);
+  if (character < '0' || character > '9') return -1;
+  while (character >= '0' && character <= '9') {
+    minutes = minutes * 10 + (character - '0');
+    character = (char)pgm_read_byte(position++);
+  }
+
+  if (minutes > 59) return -1;
+  return hours * 60 + minutes;
+}
+
+// Всички следващи delay() извиквания използват автоматичния таймер.
+// Самата delayWithTimeUpdate() е дефинирана преди този macro и вътре
+// продължава да използва оригиналната Arduino delay().
+#define delay(durationMs) delayWithTimeUpdate(durationMs)
+
 __attribute__((noinline)) void lcdPrintAt(uint8_t col, uint8_t row, const __FlashStringHelper* text) {
+  // Само при работеща програма, различна от Cotton White, статичното
+  // LCD време става новата стойност на отброяването.
+  if (running && potValue >= 102) {
+    int displayedMinutes = minutesFromTimeText(text);
+    if (displayedMinutes >= 0) {
+      timeminutes = displayedMinutes;
+      automaticCountdown = true;
+      automaticCountdownSessionStarted = true;
+      lastMinuteUpdate = millis();
+    }
+  }
+
   lcd.setCursor(col, row);
   lcd.print(text);
 }
@@ -92,11 +203,11 @@ __attribute__((noinline)) void primePump3s() {
 
 __attribute__((noinline)) void runStartupMotorPattern3x() {
   for (int i = 0; i < 3; i++) {
-    analogWrite(motor, 110);
-    delay(500);
+    motorPulseMax100();
     analogWrite(motor, 82);
     delay(5000);
-    motorPulseMax100();
+    analogWrite(motor, 255);
+    delay(100);
     analogWrite(motor, 0);
     delay(5000);
   }
@@ -146,8 +257,8 @@ __attribute__((noinline)) void pump127For(unsigned long durationMs) {
 }
 
 __attribute__((noinline)) void motorPulseMax100() {
-  analogWrite(motor, 255);
-  delay(100);
+  analogWrite(motor, 110);
+  delay(500);
 }
 
 __attribute__((noinline)) void lcdShowPhaseEndCleared() {
@@ -208,6 +319,12 @@ void setup() {
 
 void loop() {
   potValue = analogRead(program_dial);
+
+  // След края на програма подготвяме таймера за следващия Start.
+  if (!running) {
+    automaticCountdown = false;
+    automaticCountdownSessionStarted = false;
+  }
 
   // Смяна на екран на 5 сек
   if (millis() - lastChange > 5000) {
@@ -306,236 +423,331 @@ void loop() {
           }
         }
         break;
-
     }
 
     if (digitalRead(start_button) == LOW && !running) {
-              bool soak = digitalRead(soak_button) == LOW;
-              bool pre = digitalRead(pre_wash_button) == LOW;
-              bool noSpin = digitalRead(without_spin_button) == LOW;
-              bool rinseHold = digitalRead(rinse_hold_button) == LOW;
+      bool soak = digitalRead(soak_button) == LOW;
+      bool pre = digitalRead(pre_wash_button) == LOW;
+      bool noSpin = digitalRead(without_spin_button) == LOW;
+      bool rinseHold = digitalRead(rinse_hold_button) == LOW;
 
-              if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
-                showInvalidComboError();
-                return;
-              }
-              noTone(buzzer);
+      if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
+        showInvalidComboError();
+        return;
+      }
+      noTone(buzzer);
 
-              int totalMinutes = 117;
+      timeminutes = 117;
 
-              if (soak) totalMinutes += 33;
-              if (pre) totalMinutes += 19;
-              if (noSpin) totalMinutes -= 10;
-              if (rinseHold) totalMinutes -= 12;
+      if (soak) timeminutes += 33;
+      if (pre) timeminutes += 19;
+      if (noSpin) timeminutes -= 10;
+      if (rinseHold) timeminutes -= 12;
 
-              running = true;
-              digitalWrite(start_led, HIGH);
+      running = true;
+      digitalWrite(start_led, HIGH);
 
-              printTotalTimeAtRow1(totalMinutes);
-              // Пуск на помпа за 3 сек
-              primePump3s();
+      printTotalTimeAtRow1(timeminutes);
+      // Пуск на помпа за 3 сек
+      primePump3s();
 
-              // Симулиране на мотор
-              runStartupMotorPattern3x();
+      // Симулиране на мотор
+      runStartupMotorPattern3x();
 
-              if (soak) {
-                lcdShowLine0Cleared(F("Phase: Soak"));
+      if (soak) {
+        lcdShowLine0Cleared(F("Phase: Soak"));
+        printTotalTimeAtRow1(timeminutes);
 
-                pump127For(20000);
-                motorPulseMax100();
-                analogWrite(motor, 70);
-                delay(6 * 60000);
+        pump127For(20000);
+        motorPulseMax100();
+        analogWrite(motor, 70);
+        delay(39500);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
 
-                analogWrite(motor, 0);
-                delay(30 * 60000);
-              }
+        for (int i = 0; i < 5; i++) {
+          analogWrite(motor, 70);
+          delay(1 * 60000);
+          timeminutes--;
+          printTotalTimeAtRow1(timeminutes);
+        }
 
-              if (pre) {
-                lcdShowLine0Cleared(F("Phase: Pre-wash"));
+        analogWrite(motor, 70);
+        delay(20500);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
 
-                analogWrite(pump, 127);
-                delay(20000);
-                motorPulseMax100();
-                digitalWrite(pump, LOW);
-                analogWrite(motor, 80);
-                delay(18 * 60000);
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 0);
-                delay(1 * 60000);
-              }
+        for (int i = 0; i < 30; i++) {
+          analogWrite(motor, 0);
+          delay(1 * 60000);
+          timeminutes--;
+          printTotalTimeAtRow1(timeminutes);
+        }
+      }
 
-              // ✅ MAIN WASH
-              lcdShowLine0Cleared(F("Phase: Main wash"));
-              printTotalTimeAtRow1(totalMinutes);
+      if (pre) {
+        lcdShowLine0Cleared(F("Phase: Pre-wash"));
+        printTotalTimeAtRow1(timeminutes);
 
-              pump127For(20000);
-              motorPulseMax100();
-              analogWrite(motor, 70);
-              delay(6 * 60000);
-              lcdPrintAt(0, 1, F("Time: 1:50      "));
+        analogWrite(pump, 127);
+        delay(20000);
+        motorPulseMax100();
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 80);
+        delay(39500);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
 
-              for (int i = 0; i < 276; i++) {
-                motorPulseMax100();
-                analogWrite(motor, 85);
-                delay(6000);
-                analogWrite(motor, 70);
-                delay(7000);
-                analogWrite(motor, 0);
-                delay(2000);
-              }
+        for (int i = 0; i < 17; i++) {
+          analogWrite(motor, 80);
+          delay(1 * 60000);
+          timeminutes--;
+          printTotalTimeAtRow1(timeminutes);
+        }
 
-              lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:42       "));
-              digitalWrite(pump, HIGH);
-              motorPulseMax100();
-              analogWrite(motor, 70);
-              delay(1 * 60000);
-              lcdPrintAt(0, 1, F("Time: 0:41       "));
+        analogWrite(motor, 80);
+        delay(20500);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 0);
+        delay(1 * 60000);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+      }
 
-              // Симулиране на мотор - плавно ускорение
-              int pwmValue = 70;
-              int targetPWM = 166;
-              unsigned long lastUpdate = millis();
+      // ✅ MAIN WASH
+      timeminutes = 117;
+      lcdShowLine0Cleared(F("Phase: Main wash"));
+      printTotalTimeAtRow1(timeminutes);
 
-              while (pwmValue < targetPWM) {
-                unsigned long now = millis();
-                if (now - lastUpdate >= 1000) {
-                  pwmValue++;
-                  analogWrite(motor, pwmValue);
-                  lastUpdate = now;
-                }
-              }
-              analogWrite(motor, 166);
-              delay(2 * 60000);
+      pump127For(20000);
+      motorPulseMax100();
 
-              lcdPrintAt(0, 1, F("Time: 0:35       "));
-              analogWrite(motor, 70);
-              analogWrite(pump, 127);
-              delay(1 * 60000);
-              digitalWrite(pump, LOW);
-              delay(11 * 60000);
+      analogWrite(motor, 70);
+      delay(39500);
+      timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
 
-              lcdPrintAt(0, 1, F("Time: 0:23    "));
-              digitalWrite(pump, HIGH);
-              analogWrite(motor, 70);
-              delay(1 * 60000);
-              analogWrite(motor, 70);
-              delay(7000);
-              analogWrite(motor, 85);
-              delay(3000);
+      for (int i = 0; i < 5; i++) {
+        analogWrite(motor, 70);
+        delay(1 * 60000);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+      }
 
-              pwmValue = 85;
-              targetPWM = 166;
-              lastUpdate = millis();
+      analogWrite(motor, 70);
+      delay(20500);
+      timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+      timeminutes = 110;
+      printTotalTimeAtRow1(timeminutes);
 
-              while (pwmValue < targetPWM) {
-                unsigned long now = millis();
-                if (now - lastUpdate >= 180) {
-                  pwmValue++;
-                  analogWrite(motor, pwmValue);
-                  lastUpdate = now;
-                }
-              }
-              analogWrite(motor, 166);
-              delay(20000);
+      for (int i = 0; i < 69; i++) {
+        for (int i = 0; i < 4; i++) {
+          motorPulseMax100();
+          analogWrite(motor, 85);
+          delay(6000);
+          analogWrite(motor, 70);
+          delay(6500);
+          analogWrite(motor, 0);
+          delay(2000);
+        }
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+      }
 
-              lcdPrintAt(0, 1, F("Time: 0:21    "));
-              analogWrite(pump, 127);
-              analogWrite(motor, 70);
-              delay(1 * 60000);
-              digitalWrite(pump, LOW);
-              delay(10 * 60000);
+      lcdPrintAt(0, 0, F("Phase: Rinses      "));
+      timeminutes = 42;
+      printTotalTimeAtRow1(timeminutes);
+      digitalWrite(pump, HIGH);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      timeminutes = 41;
+      printTotalTimeAtRow1(timeminutes);
 
-              if (rinseHold) {
-                lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
+      // Симулиране на мотор - плавно ускорение
+      int pwmValue = 70;
+      int targetPWM = 166;
+      unsigned long lastUpdate = millis();
 
-                analogWrite(motor, 0);
-                digitalWrite(pump, LOW);
-                running = false;
-                return;
-              }
+      while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
+        unsigned long now = millis();
+        if (now - lastUpdate >= 1000) {
+          pwmValue++;
+          analogWrite(motor, pwmValue);
+          lastUpdate = now;
+        }
+      }
+      analogWrite(motor, 166);
+      delay(2 * 60000);
 
-              if (noSpin) {
-                lcdShowPhaseDrainCleared();
+      timeminutes = 35;
+      printTotalTimeAtRow1(timeminutes);
+      analogWrite(motor, 70);
+      analogWrite(pump, 127);
+      delay(1 * 60000);
+      timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+      for (int i = 0; i < 11; i++) {
+        digitalWrite(pump, LOW);
+        delay(1 * 60000);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+      }
 
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 70);
-                delay(30000);
-                analogWrite(motor, 0);
-                delay(30000);
+      timeminutes = 23;
+      timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 85);
+      delay(3000);
 
-                lcdShowPhaseEndCleared();
+      pwmValue = 85;
+      targetPWM = 166;
+      lastUpdate = millis();
 
-                digitalWrite(pump, LOW);
+      while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
+        unsigned long now = millis();
+        if (now - lastUpdate >= 180) {
+          pwmValue++;
+          analogWrite(motor, pwmValue);
+          lastUpdate = now;
+        }
+      }
+      analogWrite(motor, 166);
+      delay(20000);
 
-                beepShort6();
+      timeminutes = 21;
+      printTotalTimeAtRow1(timeminutes);
+      analogWrite(pump, 127);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+      for (int i = 0; i < 10; i++) {
+        digitalWrite(pump, LOW);
+        delay(1 * 60000);
+        timeminutes--;
+        printTotalTimeAtRow1(timeminutes);
+      }
 
-                running = false;
-                return;
-              } else {
-                lcdShowPhaseDrainWithRow1(F("Time: 0:10    "));
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 70);
-                delay(30000);
-                lcdShowPhaseFinalSpinWithRow1(F("Time: 0:10    "));
-                delay(7000);
-                analogWrite(motor, 90);
-                delay(1500);
-                analogWrite(motor, 0);
-                delay(10000);
-                digitalWrite(pump, LOW);
-                delay(10000);
+      if (rinseHold) {
+        lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
 
-                analogWrite(motor, 255);
-                digitalWrite(pump, HIGH);
-                delay(100);
-                lcdPrintAt(0, 1, F("Time: 0:09    "));
-                analogWrite(motor, 70);
-                delay(7000);
-                analogWrite(motor, 100);
-                delay(2500);
-                digitalWrite(pump, LOW);
-                analogWrite(motor, 60);
-                delay(10000);
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 70);
-                delay(7000);
-                analogWrite(motor, 110);
-                delay(3500);
-                digitalWrite(pump, LOW);
-                analogWrite(motor, 60);
-                delay(10000);
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 70);
-                delay(7000);
-                analogWrite(motor, 110);
-                delay(6000);
-                analogWrite(motor, 111);
-                delay(500);
-                analogWrite(motor, 150);
-                delay(20000);
-                analogWrite(motor, 191);
-                delay(150000);
-                analogWrite(motor, 212);
-                delay(5000);
-                analogWrite(motor, 200);
-                delay(40000);
-                analogWrite(motor, 237);
-                delay(4000);
-                analogWrite(motor, 225);
-                delay(1 * 60000);
-                analogWrite(motor, 0);
-                delay(5000);
-                digitalWrite(pump, LOW);
-                digitalWrite(start_led, LOW);
-              }
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        running = false;
+        return;
+      }
 
-              lcdShowPhaseEndCleared();
-              lcdShowTimeZeroRow1();
-              beepTripleLongGap6();
+      if (noSpin) {
+        lcdShowPhaseDrainCleared();
 
-              running = false;
-            }
-    } else if (potValue < 204) {
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        analogWrite(motor, 0);
+        delay(30000);
+
+        lcdShowPhaseEndCleared();
+
+        digitalWrite(pump, LOW);
+
+        beepShort6();
+
+        running = false;
+        return;
+      } else {
+        lcdPrintAt(0, 0, F("Phase: Drain    "));
+        
+      timeminutes = 10;
+      printTotalTimeAtRow1(timeminutes);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        lcdPrintAt(0, 0, F("Phase: Finalspin    "));
+        
+      timeminutes = 10;
+      printTotalTimeAtRow1(timeminutes);
+        delay(7000);
+        analogWrite(motor, 90);
+        delay(1500);
+        analogWrite(motor, 0);
+        delay(10000);
+        digitalWrite(pump, LOW);
+        delay(10000);
+
+        analogWrite(motor, 255);
+        digitalWrite(pump, HIGH);
+        delay(100);
+        timeminutes = 10;
+      printTotalTimeAtRow1(timeminutes);
+        analogWrite(motor, 70);
+        delay(7000);
+        analogWrite(motor, 100);
+        delay(2500);
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 60);
+        delay(10000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(7000);
+        analogWrite(motor, 110);
+        delay(3500);
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 60);
+        delay(10000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(7000);
+        analogWrite(motor, 110);
+        delay(6000);
+        analogWrite(motor, 111);
+        delay(500);
+        analogWrite(motor, 150);
+        delay(20000);
+        timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+        analogWrite(motor, 191);
+        delay(150000);
+        timeminutes--;
+        timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+        analogWrite(motor, 212);
+        delay(5000);
+        analogWrite(motor, 200);
+        delay(40000);
+        timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+        analogWrite(motor, 237);
+        delay(4000);
+        analogWrite(motor, 225);
+        delay(1 * 60000);
+        timeminutes--;
+      printTotalTimeAtRow1(timeminutes);
+        analogWrite(motor, 0);
+        delay(5000);
+        digitalWrite(pump, LOW);
+        digitalWrite(start_led, LOW);
+      }
+
+      lcdShowPhaseEndCleared();
+      timeminutes = 0;
+      printTotalTimeAtRow1(timeminutes);
+      lcdShowTimeZeroRow1();
+      beepTripleLongGap6();
+
+      running = false;
+    }
+  } else if (potValue < 204) {
     // --- Показване на програма според tempCase и бутоните ---
     bool error = false;
     switch (tempCase) {
@@ -668,18 +880,18 @@ void loop() {
       noTone(buzzer);
 
       // --- БАЗОВО ВРЕМЕ ---
-      int totalMinutes = 116;  // 1:56
+      timeminutes = 116;  // 1:56
 
       // --- ДОБАВКИ ---
-      if (soak) totalMinutes += 33;
-      if (pre) totalMinutes += 19;
+      if (soak) timeminutes += 33;
+      if (pre) timeminutes += 19;
 
       // --- НАМАЛЕНИЯ ---
-      if (noSpin) totalMinutes -= 10;
-      if (rinseHold) totalMinutes -= 12;
+      if (noSpin) timeminutes -= 10;
+      if (rinseHold) timeminutes -= 12;
       running = true;
       digitalWrite(start_led, HIGH);
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
       // Пуск на помпа за 3 сек
       primePump3s();
 
@@ -714,7 +926,7 @@ void loop() {
 
       // ✅ MAIN WASH ВИНАГИ
       lcdShowLine0Cleared(F("Phase: Main wash"));
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
 
       pump127For(20000);
       motorPulseMax100();
@@ -724,7 +936,7 @@ void loop() {
       for (int i = 0; i < 240; i++) {
         motorPulseMax100();
         analogWrite(motor, 85);
-        delay(4000);
+        delay(3500);
         analogWrite(motor, 70);
         delay(4000);
         analogWrite(motor, 0);
@@ -746,6 +958,7 @@ void loop() {
       unsigned long lastUpdate = millis();
 
       while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
         unsigned long now = millis();
         if (now - lastUpdate >= 900) {
           pwmValue++;
@@ -774,6 +987,7 @@ void loop() {
       lastUpdate = millis();
 
       while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
         unsigned long now = millis();
         if (now - lastUpdate >= 500) {  // 1 секунда = +1 PWM
           pwmValue++;
@@ -804,6 +1018,7 @@ void loop() {
       lastUpdate = millis();
 
       while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
         unsigned long now = millis();
         if (now - lastUpdate >= 180) {  // 1 секунда = +1 PWM
           pwmValue++;
@@ -961,352 +1176,352 @@ void loop() {
         }
         break;
 
-          case 1:  // 40°
-            if (screen == 0) {
-              lcdPrintAt(0, 0, F("Minimum iron   "));
+      case 1:  // 40°
+        if (screen == 0) {
+          lcdPrintAt(0, 0, F("Minimum iron   "));
 
-              // --- Проверка за забранени комбинации ---
+          // --- Проверка за забранени комбинации ---
 
-              // Проверка за забранени комбинации
-              if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
-                showPreviewInvalidError();  // включваме бъзъра
-                error = true;
-              } else {
-                noTone(buzzer);  // няма грешка → изключваме бъзъра
-              }
-
-              // Ако няма грешка, показваме времето
-              if (!error) {
-                if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:18     "));
-                } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:19     "));
-                } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:44     "));
-                } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:45    "));
-                } else if (digitalRead(pre_wash_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:23     "));
-                } else if (digitalRead(soak_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:49     "));
-                } else if (digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:11    "));
-                } else if (digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:12     "));
-                } else {
-                  lcdPrintAt(0, 1, F("Time: 1:16    "));
-                }
-              }
-            }
-
-                if (screen == 1) {
-                  lcdPrintAt(0, 0, F("Temperature: 50°"));
-              if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
-                lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
-              } else {
-                lcdPrintAt(0, 1, F("Spin: 900 rpm "));
-              }
-            }
-            break;
-          case 2:  // 30'c
-            if (screen == 0) {
-              lcdPrintAt(0, 0, F("Minimum iron   "));
-
-              // --- Проверка за забранени комбинации ---
-              error = false;
-
-              // Проверка за забранени комбинации
-              if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
-                showPreviewInvalidError();  // включваме бъзъра
-                error = true;
-              } else {
-                noTone(buzzer);  // няма грешка → изключваме бъзъра
-              }
-
-              // Ако няма грешка, показваме времето
-              if (!error) {
-                if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:18     "));
-                } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:19     "));
-                } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:44     "));
-                } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:45    "));
-                } else if (digitalRead(pre_wash_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:23     "));
-                } else if (digitalRead(soak_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:49     "));
-                } else if (digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:11    "));
-                } else if (digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 1:12     "));
-                } else {
-                  lcdPrintAt(0, 1, F("Time: 1:16    "));
-                }
-              }
-
-            } else if (screen == 1) {
-              lcdPrintAt(0, 0, F("Temperature: 40°"));
-              if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
-                lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
-              } else {
-                lcdPrintAt(0, 1, F("Spin: 900 rpm "));
-              }
-            }
-            break;
-
-              case 3:  // 30°C
-                if (screen == 0) {
-                  lcdPrintAt(0, 0, F("Minimum iron   "));
-
-                  // --- Проверка за забранени комбинации ---
-                  error = false;
-                  if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
-                    showPreviewInvalidError();  // включваме бъзъра
-                    error = true;
-                  } else {
-                    noTone(buzzer);
-                  }
-
-                  if (!error) {
-                    if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:18     "));
-                    } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:19     "));
-                    } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:44     "));
-                    } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:45    "));
-                    } else if (digitalRead(pre_wash_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:23     "));
-                    } else if (digitalRead(soak_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:49     "));
-                    } else if (digitalRead(rinse_hold_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:11    "));
-                    } else if (digitalRead(without_spin_button) == LOW) {
-                      lcdPrintAt(0, 1, F("Time: 1:12     "));
-                    } else {
-                      lcdPrintAt(0, 1, F("Time: 1:16    "));
-                    }
-                  }
-                }
-
-                if (screen == 1) {
-                  lcdPrintAt(0, 0, F("Temperature: 30°"));
-                  if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
-                    lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
-                  } else {
-                    lcdPrintAt(0, 1, F("Spin: 900 rpm "));
-                  }
-                }
-                break;
-            }  // switch tempCase
-
-        // --- Старт бутон ---
-        if (digitalRead(start_button) == LOW && !running) {
-            bool soak = digitalRead(soak_button) == LOW;
-            bool pre = digitalRead(pre_wash_button) == LOW;
-            bool noSpin = digitalRead(without_spin_button) == LOW;
-            bool rinseHold = digitalRead(rinse_hold_button) == LOW;
-
-            // Забранени комбинации
-            if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
-              showInvalidComboError();
-              return;
-            }
-            noTone(buzzer);
-
-            // --- БАЗОВО ВРЕМЕ ---
-            int totalMinutes = 76;  // 1:16 за 30°C, базово време
-
-            // --- ДОБАВКИ ---
-            if (soak) totalMinutes += 33;
-            if (pre) totalMinutes += 7;
-
-            // --- НАМАЛЕНИЯ ---
-            if (noSpin) totalMinutes -= 4;
-            if (rinseHold) totalMinutes -= 5;
-            running = true;
-            digitalWrite(start_led, HIGH);
-            printTotalTimeAtRow1(totalMinutes);
-
-            // Пуск на помпа за 3 сек
-            primePump3s();
-            
-            if (soak) {
-              lcdShowLine0Cleared(F("Phase: Soak"));
-
-              pump127For(20000);
-              motorPulseMax100();
-              analogWrite(motor, 70);
-              delay(6 * 60000);
-
-              analogWrite(motor, 0);
-              delay(30 * 60000);
-            }
-
-            if (pre) {
-              lcdShowLine0Cleared(F("Phase: Pre-wash"));
-
-              analogWrite(pump, 127);
-              delay(20000);
-              motorPulseMax100();
-              digitalWrite(pump, LOW);
-              analogWrite(motor, 80);
-              delay(6 * 60000);
-              digitalWrite(pump, HIGH);
-              analogWrite(motor, 0);
-              delay(1 * 60000);
-            }
-
-            // ✅ MAIN WASH ВИНАГИ
-            lcdShowLine0Cleared(F("Phase: Main wash"));
-            printTotalTimeAtRow1(totalMinutes);
-
-            pump127For(20000);
-            motorPulseMax100();
-            analogWrite(motor, 70);
-            delay(2 * 60000);
-            lcdPrintAt(0, 1, F("Time: 1:13      "));
-
-            for (int i = 0; i < 180; i++) {
-              motorPulseMax100();
-              analogWrite(motor, 85);
-              delay(6000);
-              analogWrite(motor, 70);
-              delay(7000);
-              analogWrite(motor, 0);
-              delay(2000);
-            }
-
-            analogWrite(pump, 127);
-            analogWrite(motor, 85);
-            delay(1 * 60000);
-
-            lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:30      "));
-            digitalWrite(pump, HIGH);
-            motorPulseMax100();
-            analogWrite(motor, 70);
-            delay(1 * 60000);
-            lcdPrintAt(0, 1, F("Time: 0:29       "));
-            analogWrite(motor, 75);
-            delay(7000);
-            analogWrite(motor, 90);
-            delay(1500);
-            analogWrite(motor, 0);
-            delay(2000);
-            digitalWrite(pump, LOW);
-            motorPulseMax100();
-            analogWrite(motor, 60);
-            delay(10000);
-            digitalWrite(pump, HIGH);
-            delay(2000);
-            analogWrite(motor, 70);
-            delay(7000);
-            analogWrite(motor, 105);
-            delay(3500);
-            digitalWrite(pump, LOW);
-            analogWrite(motor, 60);
-            lcdPrintAt(0, 1, F("Time: 0:28       "));
-            analogWrite(motor, 70);
-            analogWrite(pump, 127);
-            delay(1 * 60000);
-            digitalWrite(pump, LOW);
-            delay(7 * 60000);
-            lcdPrintAt(0, 1, F("Time: 0:20    "));
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 70);
-            delay(1 * 60000);
-            analogWrite(motor, 70);
-            delay(7000);
-            analogWrite(motor, 90);
-            delay(500);
-            digitalWrite(pump, LOW);
-            analogWrite(motor, 0);
-            delay(10000);
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 70);
-            delay(7000);
-            analogWrite(motor, 105);
-            delay(3500);
-            digitalWrite(pump, LOW);
-            analogWrite(motor, 60);
-            lcdPrintAt(0, 1, F("Time: 0:18    "));
-            analogWrite(pump, 127);
-            analogWrite(motor, 70);
-            delay(1 * 60000);
-            digitalWrite(pump, LOW);
-            delay(8 * 60000);
-
-            // --- RINSE HOLD ---
-            if (rinseHold) {
-              lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
-
-              analogWrite(motor, 0);
-              digitalWrite(pump, LOW);
-              running = false;
-              return;
-            }
-
-            // --- WITHOUT SPIN ---
-            if (noSpin) {
-              lcdShowPhaseDrainCleared();
-
-              digitalWrite(pump, HIGH);
-              analogWrite(motor, 70);
-              delay(30000);
-              analogWrite(motor, 0);
-              delay(30000);
-
-              lcdShowPhaseEndCleared();
-
-              digitalWrite(pump, LOW);
-
-              beepShort6();
-
-              running = false;
-              return;
-            } else {
-              lcdShowPhaseDrainWithRow1(F("Time: 0:05    "));
-              digitalWrite(pump, HIGH);
-              analogWrite(motor, 70);
-              delay(30000);
-              lcdShowPhaseFinalSpinWithRow1(F("Time: 0:04    "));
-              delay(7000);
-              analogWrite(motor, 90);
-              delay(1500);
-              digitalWrite(pump, LOW);
-              analogWrite(motor, 0);
-              delay(20000);
-              analogWrite(motor, 255);
-              digitalWrite(pump, HIGH);
-              delay(100);
-              lcdPrintAt(0, 1, F("Time: 0:02    "));
-              analogWrite(motor, 70);
-              delay(7000);
-              analogWrite(motor, 122);
-              delay(3500);
-              digitalWrite(pump, HIGH);
-              analogWrite(motor, 75);
-              delay(7000);
-              analogWrite(motor, 110);
-              delay(6000);
-              analogWrite(motor, 111);
-              delay(1000);
-              analogWrite(motor, 150);
-              delay(40000);
-              analogWrite(motor, 0);
-              delay(5000);
-              digitalWrite(pump, LOW);
-              digitalWrite(start_led, LOW);
-            }
-            lcdShowPhaseEndCleared();
-            lcdShowTimeZeroRow1();
-            beepTripleLongGap6();
-            running = false;
+          // Проверка за забранени комбинации
+          if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
+            showPreviewInvalidError();  // включваме бъзъра
+            error = true;
+          } else {
+            noTone(buzzer);  // няма грешка → изключваме бъзъра
           }
-        } else if (potValue < 409) {
+
+          // Ако няма грешка, показваме времето
+          if (!error) {
+            if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:18     "));
+            } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:19     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:44     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:45    "));
+            } else if (digitalRead(pre_wash_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:23     "));
+            } else if (digitalRead(soak_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:49     "));
+            } else if (digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:11    "));
+            } else if (digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:12     "));
+            } else {
+              lcdPrintAt(0, 1, F("Time: 1:16    "));
+            }
+          }
+        }
+
+        if (screen == 1) {
+          lcdPrintAt(0, 0, F("Temperature: 50°"));
+          if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
+            lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
+          } else {
+            lcdPrintAt(0, 1, F("Spin: 900 rpm "));
+          }
+        }
+        break;
+      case 2:  // 30'c
+        if (screen == 0) {
+          lcdPrintAt(0, 0, F("Minimum iron   "));
+
+          // --- Проверка за забранени комбинации ---
+          error = false;
+
+          // Проверка за забранени комбинации
+          if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
+            showPreviewInvalidError();  // включваме бъзъра
+            error = true;
+          } else {
+            noTone(buzzer);  // няма грешка → изключваме бъзъра
+          }
+
+          // Ако няма грешка, показваме времето
+          if (!error) {
+            if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:18     "));
+            } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:19     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:44     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:45    "));
+            } else if (digitalRead(pre_wash_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:23     "));
+            } else if (digitalRead(soak_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:49     "));
+            } else if (digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:11    "));
+            } else if (digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:12     "));
+            } else {
+              lcdPrintAt(0, 1, F("Time: 1:16    "));
+            }
+          }
+
+        } else if (screen == 1) {
+          lcdPrintAt(0, 0, F("Temperature: 40°"));
+          if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
+            lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
+          } else {
+            lcdPrintAt(0, 1, F("Spin: 900 rpm "));
+          }
+        }
+        break;
+
+      case 3:  // 30°C
+        if (screen == 0) {
+          lcdPrintAt(0, 0, F("Minimum iron   "));
+
+          // --- Проверка за забранени комбинации ---
+          error = false;
+          if ((digitalRead(pre_wash_button) == LOW && digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
+            showPreviewInvalidError();  // включваме бъзъра
+            error = true;
+          } else {
+            noTone(buzzer);
+          }
+
+          if (!error) {
+            if (digitalRead(pre_wash_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:18     "));
+            } else if (digitalRead(pre_wash_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:19     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:44     "));
+            } else if (digitalRead(soak_button) == LOW && digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:45    "));
+            } else if (digitalRead(pre_wash_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:23     "));
+            } else if (digitalRead(soak_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:49     "));
+            } else if (digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:11    "));
+            } else if (digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 1:12     "));
+            } else {
+              lcdPrintAt(0, 1, F("Time: 1:16    "));
+            }
+          }
+        }
+
+        if (screen == 1) {
+          lcdPrintAt(0, 0, F("Temperature: 30°"));
+          if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
+            lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
+          } else {
+            lcdPrintAt(0, 1, F("Spin: 900 rpm "));
+          }
+        }
+        break;
+    }  // switch tempCase
+
+    // --- Старт бутон ---
+    if (digitalRead(start_button) == LOW && !running) {
+      bool soak = digitalRead(soak_button) == LOW;
+      bool pre = digitalRead(pre_wash_button) == LOW;
+      bool noSpin = digitalRead(without_spin_button) == LOW;
+      bool rinseHold = digitalRead(rinse_hold_button) == LOW;
+
+      // Забранени комбинации
+      if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
+        showInvalidComboError();
+        return;
+      }
+      noTone(buzzer);
+
+      // --- БАЗОВО ВРЕМЕ ---
+      timeminutes = 76;  // 1:16 за 30°C, базово време
+
+      // --- ДОБАВКИ ---
+      if (soak) timeminutes += 33;
+      if (pre) timeminutes += 7;
+
+      // --- НАМАЛЕНИЯ ---
+      if (noSpin) timeminutes -= 4;
+      if (rinseHold) timeminutes -= 5;
+      running = true;
+      digitalWrite(start_led, HIGH);
+      printTotalTimeAtRow1(timeminutes);
+
+      // Пуск на помпа за 3 сек
+      primePump3s();
+
+      if (soak) {
+        lcdShowLine0Cleared(F("Phase: Soak"));
+
+        pump127For(20000);
+        motorPulseMax100();
+        analogWrite(motor, 70);
+        delay(6 * 60000);
+
+        analogWrite(motor, 0);
+        delay(30 * 60000);
+      }
+
+      if (pre) {
+        lcdShowLine0Cleared(F("Phase: Pre-wash"));
+
+        analogWrite(pump, 127);
+        delay(20000);
+        motorPulseMax100();
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 80);
+        delay(6 * 60000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 0);
+        delay(1 * 60000);
+      }
+
+      // ✅ MAIN WASH ВИНАГИ
+      lcdShowLine0Cleared(F("Phase: Main wash"));
+      printTotalTimeAtRow1(timeminutes);
+
+      pump127For(20000);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(2 * 60000);
+      lcdPrintAt(0, 1, F("Time: 1:13      "));
+
+      for (int i = 0; i < 180; i++) {
+        motorPulseMax100();
+        analogWrite(motor, 85);
+        delay(6000);
+        analogWrite(motor, 70);
+        delay(6500);
+        analogWrite(motor, 0);
+        delay(2000);
+      }
+
+      analogWrite(pump, 127);
+      analogWrite(motor, 85);
+      delay(1 * 60000);
+
+      lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:30      "));
+      digitalWrite(pump, HIGH);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:29       "));
+      analogWrite(motor, 75);
+      delay(7000);
+      analogWrite(motor, 90);
+      delay(1500);
+      analogWrite(motor, 0);
+      delay(2000);
+      digitalWrite(pump, LOW);
+      motorPulseMax100();
+      analogWrite(motor, 60);
+      delay(10000);
+      digitalWrite(pump, HIGH);
+      delay(2000);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 105);
+      delay(3500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 60);
+      lcdPrintAt(0, 1, F("Time: 0:28       "));
+      analogWrite(motor, 70);
+      analogWrite(pump, 127);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(7 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:20    "));
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 90);
+      delay(500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 0);
+      delay(10000);
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 105);
+      delay(3500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 60);
+      lcdPrintAt(0, 1, F("Time: 0:18    "));
+      analogWrite(pump, 127);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(8 * 60000);
+
+      // --- RINSE HOLD ---
+      if (rinseHold) {
+        lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
+
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        running = false;
+        return;
+      }
+
+      // --- WITHOUT SPIN ---
+      if (noSpin) {
+        lcdShowPhaseDrainCleared();
+
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        analogWrite(motor, 0);
+        delay(30000);
+
+        lcdShowPhaseEndCleared();
+
+        digitalWrite(pump, LOW);
+
+        beepShort6();
+
+        running = false;
+        return;
+      } else {
+        lcdShowPhaseDrainWithRow1(F("Time: 0:05    "));
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        lcdShowPhaseFinalSpinWithRow1(F("Time: 0:04    "));
+        delay(7000);
+        analogWrite(motor, 90);
+        delay(1500);
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 0);
+        delay(20000);
+        analogWrite(motor, 255);
+        digitalWrite(pump, HIGH);
+        delay(100);
+        lcdPrintAt(0, 1, F("Time: 0:02    "));
+        analogWrite(motor, 70);
+        delay(7000);
+        analogWrite(motor, 122);
+        delay(3500);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 75);
+        delay(7000);
+        analogWrite(motor, 110);
+        delay(6000);
+        analogWrite(motor, 111);
+        delay(1000);
+        analogWrite(motor, 150);
+        delay(40000);
+        analogWrite(motor, 0);
+        delay(5000);
+        digitalWrite(pump, LOW);
+        digitalWrite(start_led, LOW);
+      }
+      lcdShowPhaseEndCleared();
+      lcdShowTimeZeroRow1();
+      beepTripleLongGap6();
+      running = false;
+    }
+  } else if (potValue < 409) {
 
     switch (tempCase) {
 
@@ -1367,8 +1582,10 @@ void loop() {
           }
 
           noTone(buzzer);
+          timeminutes = noSpin ? 1 : 8;
           running = true;
           digitalWrite(start_led, HIGH);
+          printTotalTimeAtRow1(timeminutes);
 
           if (noSpin) {
             // --- WITHOUT SPIN ---
@@ -1399,17 +1616,17 @@ void loop() {
             delay(7000);
             analogWrite(motor, 110);
             delay(35000);
-            lcd.print(F("Time: 0:06    "));
+            setTimeMinutesAndPrint(6);
             analogWrite(motor, 150);
             delay(20000);
             analogWrite(motor, 191);
-            lcd.print(F("Time: 0:05    "));
+            setTimeMinutesAndPrint(5);
             delay(2 * 60000);
-            lcd.print(F("Time: 0:04    "));
+            setTimeMinutesAndPrint(4);
             analogWrite(motor, 212);
             delay(3000);
             analogWrite(motor, 200);
-            lcd.print(F("Time: 0:03   "));
+            setTimeMinutesAndPrint(3);
             delay(10000);
             analogWrite(motor, 225);
             delay(170000);
@@ -1474,123 +1691,123 @@ void loop() {
           }
         }
         break;
+    }
 
-        // --- Старт бутон ---
-        if (digitalRead(start_button) == LOW && !running) {
-          bool soak = digitalRead(soak_button) == LOW;
-          bool pre = digitalRead(pre_wash_button) == LOW;
-          bool noSpin = digitalRead(without_spin_button) == LOW;
-          bool rinseHold = digitalRead(rinse_hold_button) == LOW;
+    // --- Старт бутон ---
+    if (digitalRead(start_button) == LOW && !running) {
+      bool soak = digitalRead(soak_button) == LOW;
+      bool pre = digitalRead(pre_wash_button) == LOW;
+      bool noSpin = digitalRead(without_spin_button) == LOW;
+      bool rinseHold = digitalRead(rinse_hold_button) == LOW;
 
-          // Забранени комбинации
-          if ((soak && pre) || (rinseHold && noSpin) || (soak)) {
-            lcd.clear();
-            showInvalidComboError();
-            return;
-          }
-          noTone(buzzer);
+      // Забранени комбинации
+      if ((soak && pre) || (rinseHold && noSpin) || (soak)) {
+        lcd.clear();
+        showInvalidComboError();
+        return;
+      }
+      noTone(buzzer);
 
-          // --- БАЗОВО ВРЕМЕ ---
-          int totalMinutes = 15;  // 1:56
+      // --- БАЗОВО ВРЕМЕ ---
+      timeminutes = 15;  // 1:56
 
-          // --- ДОБАВКИ ---
-          if (pre) totalMinutes += 11;
+      // --- ДОБАВКИ ---
+      if (pre) timeminutes += 11;
 
-          // --- НАМАЛЕНИЯ ---
-          if (noSpin) totalMinutes -= 3;
-          if (rinseHold) totalMinutes -= 4;
-          running = true;
-          digitalWrite(start_led, HIGH);
-          printTotalTimeAtRow1(totalMinutes);
-          // Пуск на помпа за 3 сек
-          primePump3s();
+      // --- НАМАЛЕНИЯ ---
+      if (noSpin) timeminutes -= 3;
+      if (rinseHold) timeminutes -= 4;
+      running = true;
+      digitalWrite(start_led, HIGH);
+      printTotalTimeAtRow1(timeminutes);
+      // Пуск на помпа за 3 сек
+      primePump3s();
 
-          if (pre) {
-            lcdShowLine0Cleared(F("Phase: Pre-wash"));
+      if (pre) {
+        lcdShowLine0Cleared(F("Phase: Pre-wash"));
 
-            analogWrite(pump, 127);
-            delay(20000);
-            motorPulseMax100();
-            digitalWrite(pump, LOW);
-            analogWrite(motor, 70);
-            delay(10 * 60000);
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 0);
-            delay(1 * 60000);
-          }
+        analogWrite(pump, 127);
+        delay(20000);
+        motorPulseMax100();
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 70);
+        delay(10 * 60000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 0);
+        delay(1 * 60000);
+      }
 
-          // ✅ MAIN WASH ВИНАГИ
-          lcdShowLine0Cleared(F("Phase: Main wash"));
-          printTotalTimeAtRow1(totalMinutes);
+      // ✅ MAIN WASH ВИНАГИ
+      lcdShowLine0Cleared(F("Phase: Main wash"));
+      printTotalTimeAtRow1(timeminutes);
 
-          analogWrite(pump, 127);
-          motorPulseMax100();
-          analogWrite(motor, 70);
-          delay(1 * 60000);
-          analogWrite(pump, 0);
-          analogWrite(motor, 70);
-          delay(4 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:09      "));
-          lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:09      "));
-          digitalWrite(pump, HIGH);
-          analogWrite(motor, 70);
-          delay(1 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:08       "));
-          analogWrite(motor, 70);
-          analogWrite(pump, 127);
-          delay(1 * 60000);
-          digitalWrite(pump, LOW);
-          analogWrite(motor, 70);
-          delay(4 * 60000);
-          // --- RINSE HOLD ---
-          if (rinseHold) {
-            lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
+      analogWrite(pump, 127);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      analogWrite(pump, 0);
+      analogWrite(motor, 70);
+      delay(4 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:09      "));
+      lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:09      "));
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:08       "));
+      analogWrite(motor, 70);
+      analogWrite(pump, 127);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 70);
+      delay(4 * 60000);
+      // --- RINSE HOLD ---
+      if (rinseHold) {
+        lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
 
-            analogWrite(motor, 0);
-            digitalWrite(pump, LOW);
-            running = false;
-            return;
-          }
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        running = false;
+        return;
+      }
 
-          // --- WITHOUT SPIN ---
-          if (noSpin) {
-            lcdShowPhaseDrainCleared();
+      // --- WITHOUT SPIN ---
+      if (noSpin) {
+        lcdShowPhaseDrainCleared();
 
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 70);
-            delay(1 * 60000);
-            analogWrite(motor, 0);
-            delay(30000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(1 * 60000);
+        analogWrite(motor, 0);
+        delay(30000);
 
-            lcdShowPhaseEndCleared();
+        lcdShowPhaseEndCleared();
 
-            digitalWrite(pump, LOW);
+        digitalWrite(pump, LOW);
 
-            beepShort6();
+        beepShort6();
 
-            running = false;
-            return;
-          } else {
-            lcdShowPhaseFinalSpinWithRow1(F("                "));  // 16 интервала
-            lcdPrintAt(0, 1, F("Time: 0:03"));
-            analogWrite(motor, 0);
-            digitalWrite(pump, HIGH);
-            delay(1 * 60000);
-            motorPulseMax100();
-            analogWrite(motor, 70);
-            delay(7000);
-            lcdPrintAt(0, 1, F("Time: 0:01    "));
-            analogWrite(motor, 200);
-            delay(2 * 60000);
-            analogWrite(motor, 0);
-            digitalWrite(pump, LOW);
-            digitalWrite(start_led, LOW);
-          }
-          lcdShowPhaseEndCleared();
-          lcdShowTimeZeroRow1();
-          beepTripleLongGap6();
-          running = false;
-        }
+        running = false;
+        return;
+      } else {
+        lcdShowPhaseFinalSpinWithRow1(F("                "));  // 16 интервала
+        lcdPrintAt(0, 1, F("Time: 0:03"));
+        analogWrite(motor, 0);
+        digitalWrite(pump, HIGH);
+        delay(1 * 60000);
+        motorPulseMax100();
+        analogWrite(motor, 70);
+        delay(7000);
+        lcdPrintAt(0, 1, F("Time: 0:01    "));
+        analogWrite(motor, 200);
+        delay(2 * 60000);
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        digitalWrite(start_led, LOW);
+      }
+      lcdShowPhaseEndCleared();
+      lcdShowTimeZeroRow1();
+      beepTripleLongGap6();
+      running = false;
     }
   } else if (potValue < 614) {
     // --- Показване на програма според tempCase и бутоните ---
@@ -1654,16 +1871,16 @@ void loop() {
       noTone(buzzer);
 
       // --- БАЗОВО ВРЕМЕ ---
-      int totalMinutes = 19;  // 1:56
+      timeminutes = 19;  // 1:56
 
       // --- ДОБАВКИ ---
 
       // --- НАМАЛЕНИЯ ---
-      if (noSpin) totalMinutes -= 7;
-      if (rinseHold) totalMinutes -= 8;
+      if (noSpin) timeminutes -= 7;
+      if (rinseHold) timeminutes -= 8;
       running = true;
       digitalWrite(start_led, HIGH);
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
       // Пуск на помпа за 3 сек
       primePump3s();
 
@@ -1789,230 +2006,231 @@ void loop() {
           }
         }
         break;
+    }
 
-        // --- Старт бутон ---
-        if (digitalRead(start_button) == LOW && !running) {
-          bool soak = digitalRead(soak_button) == LOW;
-          bool pre = digitalRead(pre_wash_button) == LOW;
-          bool noSpin = digitalRead(without_spin_button) == LOW;
-          bool rinseHold = digitalRead(rinse_hold_button) == LOW;
+    // --- Старт бутон ---
+    if (digitalRead(start_button) == LOW && !running) {
+      bool soak = digitalRead(soak_button) == LOW;
+      bool pre = digitalRead(pre_wash_button) == LOW;
+      bool noSpin = digitalRead(without_spin_button) == LOW;
+      bool rinseHold = digitalRead(rinse_hold_button) == LOW;
 
-          // Забранени комбинации
-          if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
-            showInvalidComboError();
-            return;
-          }
-          noTone(buzzer);
-          noTone(buzzer);
+      // Забранени комбинации
+      if (isInvalidCombo(soak, pre, rinseHold, noSpin)) {
+        showInvalidComboError();
+        return;
+      }
+      noTone(buzzer);
+      noTone(buzzer);
 
-          // --- БАЗОВО ВРЕМЕ ---
-          int totalMinutes = 69;  // 1:56
+      // --- БАЗОВО ВРЕМЕ ---
+      timeminutes = 69;  // 1:56
 
-          // --- ДОБАВКИ ---
-          if (soak) totalMinutes += 33;
-          if (pre) totalMinutes += 7;
+      // --- ДОБАВКИ ---
+      if (soak) timeminutes += 33;
+      if (pre) timeminutes += 7;
 
-          // --- НАМАЛЕНИЯ ---
-          if (noSpin) totalMinutes -= 6;
-          if (rinseHold) totalMinutes -= 7;
+      // --- НАМАЛЕНИЯ ---
+      if (noSpin) timeminutes -= 6;
+      if (rinseHold) timeminutes -= 7;
 
 
-          running = true;
-          digitalWrite(start_led, HIGH);
-          printTotalTimeAtRow1(totalMinutes);
-          // Пуск на помпа за 3 сек
-          primePump3s();
+      running = true;
+      digitalWrite(start_led, HIGH);
+      printTotalTimeAtRow1(timeminutes);
+      // Пуск на помпа за 3 сек
+      primePump3s();
 
-          // Симулиране на мотор
-          runStartupMotorPattern3x();
-          if (soak) {
-            lcdShowLine0Cleared(F("Phase: Soak"));
+      // Симулиране на мотор
+      runStartupMotorPattern3x();
+      if (soak) {
+        lcdShowLine0Cleared(F("Phase: Soak"));
 
-            pump127For(20000);
-            motorPulseMax100();
-            analogWrite(motor, 70);
-            delay(6 * 60000);
+        pump127For(20000);
+        motorPulseMax100();
+        analogWrite(motor, 70);
+        delay(6 * 60000);
 
-            analogWrite(motor, 0);
-            delay(30 * 60000);
-          }
+        analogWrite(motor, 0);
+        delay(30 * 60000);
+      }
 
-          if (pre) {
-            lcdShowLine0Cleared(F("Phase: Pre-wash"));
+      if (pre) {
+        lcdShowLine0Cleared(F("Phase: Pre-wash"));
 
-            analogWrite(pump, 127);
-            delay(20000);
-            motorPulseMax100();
-            digitalWrite(pump, LOW);
-            analogWrite(motor, 80);
-            delay(6 * 60000);
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 0);
-            delay(1 * 60000);
-          }
+        analogWrite(pump, 127);
+        delay(20000);
+        motorPulseMax100();
+        digitalWrite(pump, LOW);
+        analogWrite(motor, 80);
+        delay(6 * 60000);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 0);
+        delay(1 * 60000);
+      }
 
-          // ✅ MAIN WASH ВИНАГИ
-          lcdShowLine0Cleared(F("Phase: Main wash"));
-          printTotalTimeAtRow1(totalMinutes);
+      // ✅ MAIN WASH ВИНАГИ
+      lcdShowLine0Cleared(F("Phase: Main wash"));
+      printTotalTimeAtRow1(timeminutes);
 
-          pump127For(20000);
-          motorPulseMax100();
-          analogWrite(motor, 70);
-          delay(2 * 60000);
-          lcdPrintAt(0, 1, F("Time: 1:06     "));
-          for (int i = 0; i < 168; i++) {
-            motorPulseMax100();
-            analogWrite(motor, 85);
-            delay(6000);
-            analogWrite(motor, 70);
-            delay(7000);
-            analogWrite(motor, 0);
-            delay(2000);
-          }
-          lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:25      "));
-          digitalWrite(pump, HIGH);
-          motorPulseMax100();
-          analogWrite(motor, 70);
-          delay(1 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:24      "));
-          analogWrite(motor, 70);
-          delay(7000);
-          analogWrite(motor, 90);
-          delay(1500);
-          analogWrite(motor, 0);
-          delay(2000);
-          digitalWrite(pump, HIGH);
-          motorPulseMax100();
-          analogWrite(motor, 60);
-          delay(10000);
-          digitalWrite(pump, HIGH);
-          delay(2000);
-          analogWrite(motor, 70);
-          delay(7000);
-          analogWrite(motor, 105);
-          delay(3500);
-          digitalWrite(pump, LOW);
-          analogWrite(motor, 60);
-          delay(6000);
-          lcdPrintAt(0, 1, F("Time: 0:23     "));
-          analogWrite(motor, 70);
-          analogWrite(pump, 127);
-          delay(1 * 60000);
-          digitalWrite(pump, LOW);
-          delay(7 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:15    "));
-          digitalWrite(pump, HIGH);
-          analogWrite(motor, 70);
-          delay(1 * 60000);
-          analogWrite(motor, 75);
-          delay(7000);
-          analogWrite(motor, 95);
-          delay(2500);
-          digitalWrite(pump, LOW);
-          analogWrite(motor, 60);
-          delay(10000);
-          digitalWrite(pump, HIGH);
-          analogWrite(motor, 70);
-          delay(7000);
-          analogWrite(motor, 105);
-          delay(3500);
-          digitalWrite(pump, LOW);
-          analogWrite(motor, 60);
-          delay(10000);
-          analogWrite(motor, 70);
-          delay(7000);
-          analogWrite(motor, 85);
-          delay(3000);
-          // Симулиране на мотор - пример с плавно ускорение
-          int pwmValue = 85;
-          int targetPWM = 150;
-          unsigned long lastUpdate = millis();
+      pump127For(20000);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(2 * 60000);
+      lcdPrintAt(0, 1, F("Time: 1:06     "));
+      for (int i = 0; i < 168; i++) {
+        motorPulseMax100();
+        analogWrite(motor, 85);
+        delay(6000);
+        analogWrite(motor, 70);
+        delay(6500);
+        analogWrite(motor, 0);
+        delay(2000);
+      }
+      lcdShowLinesCleared(F("Phase: Rinses "), F("Time: 0:25      "));
+      digitalWrite(pump, HIGH);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:24      "));
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 90);
+      delay(1500);
+      analogWrite(motor, 0);
+      delay(2000);
+      digitalWrite(pump, HIGH);
+      motorPulseMax100();
+      analogWrite(motor, 60);
+      delay(10000);
+      digitalWrite(pump, HIGH);
+      delay(2000);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 105);
+      delay(3500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 60);
+      delay(6000);
+      lcdPrintAt(0, 1, F("Time: 0:23     "));
+      analogWrite(motor, 70);
+      analogWrite(pump, 127);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(7 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:15    "));
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      analogWrite(motor, 75);
+      delay(7000);
+      analogWrite(motor, 95);
+      delay(2500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 60);
+      delay(10000);
+      digitalWrite(pump, HIGH);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 105);
+      delay(3500);
+      digitalWrite(pump, LOW);
+      analogWrite(motor, 60);
+      delay(10000);
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 85);
+      delay(3000);
+      // Симулиране на мотор - пример с плавно ускорение
+      int pwmValue = 85;
+      int targetPWM = 150;
+      unsigned long lastUpdate = millis();
 
-          while (pwmValue < targetPWM) {
-            unsigned long now = millis();
-            if (now - lastUpdate >= 1000) {  // 1 секунда = +1 PWM
-              pwmValue++;
-              analogWrite(motor, pwmValue);
-              lastUpdate = now;
-            }
-            // Тук можеш да добавиш проверки на други бутони или да обновяваш LCD
-          }
-          analogWrite(motor, 150);
-          delay(2 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:11    "));
-          analogWrite(pump, 127);
-          analogWrite(motor, 70);
-          delay(1 * 60000);
-          digitalWrite(pump, LOW);
-          delay(10 * 60000);
-          lcdPrintAt(0, 1, F("Time: 0:05    "));
-          // --- RINSE HOLD ---
-          if (rinseHold) {
-            lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
-
-            analogWrite(motor, 0);
-            digitalWrite(pump, LOW);
-            running = false;
-            return;
-          }
-
-          // --- WITHOUT SPIN ---
-          if (noSpin) {
-            lcdShowPhaseDrainCleared();
-
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 70);
-            delay(30000);
-            analogWrite(motor, 0);
-            delay(30000);
-
-            lcdShowPhaseEndCleared();
-
-            digitalWrite(pump, LOW);
-
-            beepShort6();
-
-            running = false;
-            return;
-          } else {
-            lcdShowPhaseDrainWithRow1(F("Time: 0:05    "));
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 70);
-            delay(30000);
-            lcdShowPhaseFinalSpinWithRow1(F("Time: 0:05    "));
-            delay(7000);
-            analogWrite(motor, 100);
-            delay(2500);
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 60);
-            delay(20000);
-            analogWrite(motor, 255);
-            digitalWrite(pump, HIGH);
-            delay(100);
-            lcdPrintAt(0, 1, F("Time: 0:04    "));
-            analogWrite(motor, 75);
-            delay(7000);
-            analogWrite(motor, 122);
-            delay(3500);
-            digitalWrite(pump, HIGH);
-            analogWrite(motor, 75);
-            delay(7000);
-            analogWrite(motor, 110);
-            delay(6000);
-            analogWrite(motor, 111);
-            delay(1000);
-            analogWrite(motor, 150);
-            delay(2 * 60000);
-            analogWrite(motor, 0);
-            delay(5000);
-            digitalWrite(pump, LOW);
-            digitalWrite(start_led, LOW);
-          }
-          lcdShowPhaseEndCleared();
-          lcdShowTimeZeroRow1();
-          beepTripleLongGap6();
-          running = false;
+      while (pwmValue < targetPWM) {
+        updateAutomaticCountdown();
+        unsigned long now = millis();
+        if (now - lastUpdate >= 1000) {  // 1 секунда = +1 PWM
+          pwmValue++;
+          analogWrite(motor, pwmValue);
+          lastUpdate = now;
         }
+        // Тук можеш да добавиш проверки на други бутони или да обновяваш LCD
+      }
+      analogWrite(motor, 150);
+      delay(2 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:11    "));
+      analogWrite(pump, 127);
+      analogWrite(motor, 70);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(10 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:05    "));
+      // --- RINSE HOLD ---
+      if (rinseHold) {
+        lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
+
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        running = false;
+        return;
+      }
+
+      // --- WITHOUT SPIN ---
+      if (noSpin) {
+        lcdShowPhaseDrainCleared();
+
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        analogWrite(motor, 0);
+        delay(30000);
+
+        lcdShowPhaseEndCleared();
+
+        digitalWrite(pump, LOW);
+
+        beepShort6();
+
+        running = false;
+        return;
+      } else {
+        lcdShowPhaseDrainWithRow1(F("Time: 0:05    "));
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        lcdShowPhaseFinalSpinWithRow1(F("Time: 0:05    "));
+        delay(7000);
+        analogWrite(motor, 100);
+        delay(2500);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 60);
+        delay(20000);
+        analogWrite(motor, 255);
+        digitalWrite(pump, HIGH);
+        delay(100);
+        lcdPrintAt(0, 1, F("Time: 0:04    "));
+        analogWrite(motor, 75);
+        delay(7000);
+        analogWrite(motor, 122);
+        delay(3500);
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 75);
+        delay(7000);
+        analogWrite(motor, 110);
+        delay(6000);
+        analogWrite(motor, 111);
+        delay(1000);
+        analogWrite(motor, 150);
+        delay(2 * 60000);
+        analogWrite(motor, 0);
+        delay(5000);
+        digitalWrite(pump, LOW);
+        digitalWrite(start_led, LOW);
+      }
+      lcdShowPhaseEndCleared();
+      lcdShowTimeZeroRow1();
+      beepTripleLongGap6();
+      running = false;
     }
   } else if (potValue < 819) {
     // --- Показване на програма според tempCase и бутоните ---
@@ -2075,20 +2293,20 @@ void loop() {
       noTone(buzzer);
 
       // --- БАЗОВО ВРЕМЕ ---
-      int totalMinutes = 30;  // 1:56
+      timeminutes = 30;  // 1:56
 
       // --- НАМАЛЕНИЯ ---
-      if (noSpin) totalMinutes -= 7;
-      if (rinseHold) totalMinutes -= 8;
+      if (noSpin) timeminutes -= 7;
+      if (rinseHold) timeminutes -= 8;
       running = true;
       digitalWrite(start_led, HIGH);
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
       // Пуск на помпа за 3 сек
       primePump3s();
 
       // ✅ MAIN WASH ВИНАГИ
       lcdShowLine0Cleared(F("Phase: Main wash"));
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
 
       pump127For(20000);
       motorPulseMax100();
@@ -2290,157 +2508,157 @@ void loop() {
         }
         break;
       case 2:  // 30'c
-            if (screen == 0) {
-              lcdPrintAt(0, 0, F("Woollens 🧼   "));
+        if (screen == 0) {
+          lcdPrintAt(0, 0, F("Woollens 🧼   "));
 
-              // --- Проверка за забранени комбинации ---
+          // --- Проверка за забранени комбинации ---
 
 
-              // Проверка за забранени комбинации
-              if ((digitalRead(pre_wash_button) == LOW) || (digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
-                showPreviewInvalidError();  // включваме бъзъра
-                error = true;
-              } else {
-                noTone(buzzer);  // няма грешка → изключваме бъзъра
-              }
+          // Проверка за забранени комбинации
+          if ((digitalRead(pre_wash_button) == LOW) || (digitalRead(soak_button) == LOW) || (digitalRead(rinse_hold_button) == LOW && digitalRead(without_spin_button) == LOW)) {
+            showPreviewInvalidError();  // включваме бъзъра
+            error = true;
+          } else {
+            noTone(buzzer);  // няма грешка → изключваме бъзъра
+          }
 
-              // Ако няма грешка, показваме времето
-              if (!error) {
-                if (digitalRead(rinse_hold_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 0:36     "));
-                } else if (digitalRead(without_spin_button) == LOW) {
-                  lcdPrintAt(0, 1, F("Time: 0:37     "));
-                } else {
-                  lcdPrintAt(0, 1, F("Time: 0:40     "));
-                }
-              }
-
-            } else if (screen == 1) {
-              lcdPrintAt(0, 0, F("Temperature: Co"));
-              if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
-                lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
-              } else {
-                lcdPrintAt(0, 1, F("Spin: 1200 rpm "));
-              }
+          // Ако няма грешка, показваме времето
+          if (!error) {
+            if (digitalRead(rinse_hold_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 0:36     "));
+            } else if (digitalRead(without_spin_button) == LOW) {
+              lcdPrintAt(0, 1, F("Time: 0:37     "));
+            } else {
+              lcdPrintAt(0, 1, F("Time: 0:40     "));
             }
-            break;
+          }
 
-            // --- Старт бутон ---
-            if (digitalRead(start_button) == LOW && !running) {
-              bool soak = digitalRead(soak_button) == LOW;
-              bool pre = digitalRead(pre_wash_button) == LOW;
-              bool noSpin = digitalRead(without_spin_button) == LOW;
-              bool rinseHold = digitalRead(rinse_hold_button) == LOW;
-
-              // Забранени комбинации
-              if ((soak) || (pre) || (rinseHold && noSpin)) {
-                lcd.clear();
-                showInvalidComboError();
-                return;
-              }
-              noTone(buzzer);
-
-              // --- БАЗОВО ВРЕМЕ ---
-              int totalMinutes = 40;  // 1:56
-              // --- НАМАЛЕНИЯ ---
-              if (noSpin) totalMinutes -= 3;
-              if (rinseHold) totalMinutes -= 4;
-              running = true;
-              digitalWrite(start_led, HIGH);
-              printTotalTimeAtRow1(totalMinutes);
-              // Пуск на помпа за 3 сек
-              primePump3s();
-
-              // ✅ MAIN WASH ВИНАГИ
-              lcdShowLine0Cleared(F("Phase: Main wash"));
-              printTotalTimeAtRow1(totalMinutes);
-
-              pump127For(20000);
-              motorPulseMax100();
-              analogWrite(motor, 60);
-              delay(20 * 60000);
-              lcdShowLinesCleared(F("Phase: Rinses"), F("Time: 0:20     "));
-              analogWrite(motor, 0);
-              digitalWrite(pump, HIGH);
-              delay(1 * 60000);
-              motorPulseMax100();
-              analogWrite(motor, 70);
-              delay(7000);
-              analogWrite(motor, 110);
-              delay(1 * 60000);
-              lcdPrintAt(0, 1, F("Time: 0:18      "));
-              analogWrite(pump, 127);
-              analogWrite(motor, 60);
-              delay(1 * 60000);
-              digitalWrite(pump, LOW);
-              delay(5 * 60000);
-              lcdPrintAt(0, 1, F("Time: 0:12       "));
-              analogWrite(motor, 0);
-              digitalWrite(pump, HIGH);
-              delay(1 * 60000);
-              motorPulseMax100();
-              analogWrite(motor, 70);
-              delay(7000);
-              analogWrite(motor, 110);
-              delay(1 * 60000);
-              lcdPrintAt(0, 1, F("Time: 0:10       "));
-              analogWrite(pump, 127);
-              analogWrite(motor, 60);
-              delay(1 * 60000);
-              digitalWrite(pump, LOW);
-              delay(5 * 60000);
-              // --- RINSE HOLD ---
-              if (rinseHold) {
-                lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
-
-                analogWrite(motor, 0);
-                digitalWrite(pump, LOW);
-                running = false;
-                return;
-              }
-
-              // --- WITHOUT SPIN ---
-              if (noSpin) {
-                lcdShowPhaseDrainCleared();
-
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 70);
-                delay(30000);
-                analogWrite(motor, 0);
-                delay(30000);
-
-                lcdShowPhaseEndCleared();
-
-                digitalWrite(pump, LOW);
-
-                beepShort6();
-
-                running = false;
-                return;
-              } else {
-                lcdShowPhaseDrainWithRow1(F("Time: 0:04   "));
-                digitalWrite(pump, HIGH);
-                analogWrite(motor, 0);
-                delay(1 * 60000);
-                lcdShowPhaseFinalSpinWithRow1(F("Time: 0:03    "));
-                motorPulseMax100();
-                analogWrite(motor, 70);
-                delay(7000);
-                analogWrite(motor, 110);
-                delay(30000);
-                analogWrite(motor, 200);
-                delay(2 * 60000);
-                analogWrite(motor, 0);
-                digitalWrite(pump, LOW);
-                digitalWrite(start_led, LOW);
-              }
-              lcdShowPhaseEndCleared();
-              lcdShowTimeZeroRow1();
-              beepTripleLongGap6();
-              running = false;
-            }
+        } else if (screen == 1) {
+          lcdPrintAt(0, 0, F("Temperature: Co"));
+          if (digitalRead(rinse_hold_button) == LOW || digitalRead(without_spin_button) == LOW) {
+            lcdPrintAt(0, 1, F("Spin: 0 rpm    "));
+          } else {
+            lcdPrintAt(0, 1, F("Spin: 1200 rpm "));
+          }
         }
-    } else {
+        break;
+    }
+
+    // --- Старт бутон ---
+    if (digitalRead(start_button) == LOW && !running) {
+      bool soak = digitalRead(soak_button) == LOW;
+      bool pre = digitalRead(pre_wash_button) == LOW;
+      bool noSpin = digitalRead(without_spin_button) == LOW;
+      bool rinseHold = digitalRead(rinse_hold_button) == LOW;
+
+      // Забранени комбинации
+      if ((soak) || (pre) || (rinseHold && noSpin)) {
+        lcd.clear();
+        showInvalidComboError();
+        return;
+      }
+      noTone(buzzer);
+
+      // --- БАЗОВО ВРЕМЕ ---
+      timeminutes = 40;  // 1:56
+      // --- НАМАЛЕНИЯ ---
+      if (noSpin) timeminutes -= 3;
+      if (rinseHold) timeminutes -= 4;
+      running = true;
+      digitalWrite(start_led, HIGH);
+      printTotalTimeAtRow1(timeminutes);
+      // Пуск на помпа за 3 сек
+      primePump3s();
+
+      // ✅ MAIN WASH ВИНАГИ
+      lcdShowLine0Cleared(F("Phase: Main wash"));
+      printTotalTimeAtRow1(timeminutes);
+
+      pump127For(20000);
+      motorPulseMax100();
+      analogWrite(motor, 60);
+      delay(20 * 60000);
+      lcdShowLinesCleared(F("Phase: Rinses"), F("Time: 0:20     "));
+      analogWrite(motor, 0);
+      digitalWrite(pump, HIGH);
+      delay(1 * 60000);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 110);
+      delay(1 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:18      "));
+      analogWrite(pump, 127);
+      analogWrite(motor, 60);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(5 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:12       "));
+      analogWrite(motor, 0);
+      digitalWrite(pump, HIGH);
+      delay(1 * 60000);
+      motorPulseMax100();
+      analogWrite(motor, 70);
+      delay(7000);
+      analogWrite(motor, 110);
+      delay(1 * 60000);
+      lcdPrintAt(0, 1, F("Time: 0:10       "));
+      analogWrite(pump, 127);
+      analogWrite(motor, 60);
+      delay(1 * 60000);
+      digitalWrite(pump, LOW);
+      delay(5 * 60000);
+      // --- RINSE HOLD ---
+      if (rinseHold) {
+        lcdShowLinesCleared(F("Phase: Rinsehold"), F("Time: 0:00"));
+
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        running = false;
+        return;
+      }
+
+      // --- WITHOUT SPIN ---
+      if (noSpin) {
+        lcdShowPhaseDrainCleared();
+
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 70);
+        delay(30000);
+        analogWrite(motor, 0);
+        delay(30000);
+
+        lcdShowPhaseEndCleared();
+
+        digitalWrite(pump, LOW);
+
+        beepShort6();
+
+        running = false;
+        return;
+      } else {
+        lcdShowPhaseDrainWithRow1(F("Time: 0:04   "));
+        digitalWrite(pump, HIGH);
+        analogWrite(motor, 0);
+        delay(1 * 60000);
+        lcdShowPhaseFinalSpinWithRow1(F("Time: 0:03    "));
+        motorPulseMax100();
+        analogWrite(motor, 70);
+        delay(7000);
+        analogWrite(motor, 110);
+        delay(30000);
+        analogWrite(motor, 200);
+        delay(2 * 60000);
+        analogWrite(motor, 0);
+        digitalWrite(pump, LOW);
+        digitalWrite(start_led, LOW);
+      }
+      lcdShowPhaseEndCleared();
+      lcdShowTimeZeroRow1();
+      beepTripleLongGap6();
+      running = false;
+    }
+  } else {
     // --- Показване на програма според tempCase и бутоните ---
     bool error = false;
     switch (tempCase) {
@@ -2495,19 +2713,19 @@ void loop() {
           noTone(buzzer);
 
           // --- БАЗОВО ВРЕМЕ ---
-          int totalMinutes = 37;  // 1:56
+          timeminutes = 37;  // 1:56
           // --- НАМАЛЕНИЯ ---
-          if (noSpin) totalMinutes -= 1;
-          if (rinseHold) totalMinutes -= 3;
+          if (noSpin) timeminutes -= 1;
+          if (rinseHold) timeminutes -= 3;
           running = true;
           digitalWrite(start_led, HIGH);
-          printTotalTimeAtRow1(totalMinutes);
+          printTotalTimeAtRow1(timeminutes);
           // Пуск на помпа за 3 сек
           primePump3s();
 
           // ✅ MAIN WASH ВИНАГИ
           lcdShowLine0Cleared(F("Phase: Main wash"));
-          printTotalTimeAtRow1(totalMinutes);
+          printTotalTimeAtRow1(timeminutes);
 
           pump127For(20000);
           motorPulseMax100();
@@ -2748,15 +2966,15 @@ void loop() {
       noTone(buzzer);
 
       // --- БАЗОВО ВРЕМЕ ---
-      int totalMinutes = 59;  // 1:56
+      timeminutes = 59;  // 1:56
       // --- НАМАЛЕНИЯ ---
-      if (soak) totalMinutes += 33;
-      if (pre) totalMinutes += 7;
-      if (noSpin) totalMinutes -= 5;
-      if (rinseHold) totalMinutes -= 6;
+      if (soak) timeminutes += 33;
+      if (pre) timeminutes += 7;
+      if (noSpin) timeminutes -= 5;
+      if (rinseHold) timeminutes -= 6;
       running = true;
       digitalWrite(start_led, HIGH);
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
       // Пуск на помпа за 3 сек
       primePump3s();
 
@@ -2788,7 +3006,7 @@ void loop() {
 
       // ✅ MAIN WASH ВИНАГИ
       lcdShowLine0Cleared(F("Phase: Main wash"));
-      printTotalTimeAtRow1(totalMinutes);
+      printTotalTimeAtRow1(timeminutes);
 
       pump127For(30000);
       motorPulseMax100();
